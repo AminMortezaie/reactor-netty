@@ -96,7 +96,7 @@ See our [Contributing Guide](https://github.com/reactor/.github/blob/main/CONTRI
 You don't need to build from source to use `Reactor Netty` (binaries in
 [repo.spring.io](https://repo.spring.io)), but if you want to try out the latest and
 greatest, `Reactor Netty` can be easily built with the
-[gradle wrapper](https://docs.gradle.org/current/userguide/gradle_wrapper.html). You also need JDK 1.8.
+[gradle wrapper](https://docs.gradle.org/current/userguide/gradle_wrapper.html). You also need JDK 8 or higher.
 
 ```shell
 $ git clone https://github.com/reactor/reactor-netty.git
