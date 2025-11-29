@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,7 +48,7 @@ class JarFileShadingTest extends AbstractJarFileTest {
 			assertThatFileList(stream).containsOnly("netty");
 		}
 		try (Stream<Path> stream = Files.list(root.resolve("META-INF"))) {
-			assertThatFileList(stream).containsOnly("native-image", "services", "versions", "MANIFEST.MF");
+			assertThatFileList(stream).containsOnly("native-image", "services", "versions", "LICENSE", "MANIFEST.MF");
 		}
 	}
 
@@ -111,7 +111,7 @@ class JarFileShadingTest extends AbstractJarFileTest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private ListAssert<String> assertThatFileList(Stream<Path> path) {
+	private static ListAssert<String> assertThatFileList(Stream<Path> path) {
 		return (ListAssert) assertThat(path)
 				.extracting(Path::getFileName)
 				.extracting(Path::toString)

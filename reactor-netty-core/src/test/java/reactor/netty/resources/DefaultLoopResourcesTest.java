@@ -26,7 +26,10 @@ import io.netty.channel.kqueue.KQueue;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.uring.IoUring;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledForJreRange;
+import org.junit.jupiter.api.condition.EnabledOnJre;
 import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.JRE;
 import org.junit.jupiter.api.condition.OS;
 import reactor.core.publisher.Mono;
 import reactor.netty.tcp.TcpClient;
@@ -122,7 +125,7 @@ class DefaultLoopResourcesTest {
 		testClientTransportWarmup(false);
 	}
 
-	private void testClientTransportWarmup(boolean preferNative) throws Exception {
+	private static void testClientTransportWarmup(boolean preferNative) throws Exception {
 		final DefaultLoopResources loop1 =
 				(DefaultLoopResources) LoopResources.create("testClientTransportWarmup", 1, true);
 		final EventLoopGroup loop2 = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
@@ -165,7 +168,7 @@ class DefaultLoopResourcesTest {
 		testServerTransportWarmup(false);
 	}
 
-	private void testServerTransportWarmup(boolean preferNative) {
+	private static void testServerTransportWarmup(boolean preferNative) {
 		final DefaultLoopResources loop =
 				(DefaultLoopResources) LoopResources.create("testServerTransportWarmup", 1, true);
 		try {
@@ -209,11 +212,20 @@ class DefaultLoopResourcesTest {
 
 	@Test
 	@EnabledOnOs(OS.LINUX)
+	@EnabledForJreRange(min = JRE.JAVA_11)
 	void testIoUringIsAvailable() {
 		boolean isTransportIoUring = "io_uring".equals(System.getProperty("forceTransport"));
-		boolean isJava17 = System.getProperty("java.version").startsWith("17");
-		assumeThat(isTransportIoUring && isJava17).isTrue();
+		assumeThat(isTransportIoUring).isTrue();
 		assertThat(IoUring.isAvailable()).isTrue();
+	}
+
+	@Test
+	@EnabledOnOs(OS.LINUX)
+	@EnabledOnJre(JRE.JAVA_8)
+	void testIoUringIncubatorIsAvailableOnJava8() {
+		boolean isTransportIoUring = "io_uring".equals(System.getProperty("forceTransport"));
+		assumeThat(isTransportIoUring).isTrue();
+		assertThat(io.netty.incubator.channel.uring.IOUring.isAvailable()).isTrue();
 	}
 
 	@Test

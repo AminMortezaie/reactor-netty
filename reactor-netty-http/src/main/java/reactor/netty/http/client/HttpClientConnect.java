@@ -222,12 +222,16 @@ class HttpClientConnect extends HttpClient {
 				if (handler.toURI.isSecure()) {
 					if (_config.sslProvider == null) {
 						configCopied = true;
-						_config = new HttpClientConfig(config);
+						_config = new HttpClientConfig(_config);
 						_config.sslProvider = HttpClientSecure.defaultSslProvider(_config);
 					}
 
 					if (_config.checkProtocol(HttpClientConfig.h2c)) {
 						if (_config.protocols.length > 1) {
+							if (!configCopied) {
+								configCopied = true;
+								_config = new HttpClientConfig(_config);
+							}
 							removeIncompatibleProtocol(_config, HttpProtocol.H2C);
 						}
 						else {
@@ -242,12 +246,16 @@ class HttpClientConnect extends HttpClient {
 				else {
 					if (_config.sslProvider != null) {
 						configCopied = true;
-						_config = new HttpClientConfig(config);
+						_config = new HttpClientConfig(_config);
 						_config.sslProvider = null;
 					}
 
 					if (_config.checkProtocol(HttpClientConfig.h2)) {
 						if (_config.protocols.length > 1) {
+							if (!configCopied) {
+								configCopied = true;
+								_config = new HttpClientConfig(_config);
+							}
 							removeIncompatibleProtocol(_config, HttpProtocol.H2);
 						}
 						else {
@@ -268,7 +276,7 @@ class HttpClientConnect extends HttpClient {
 					if (proxyProviderSupplier != null) {
 						if (!configCopied) {
 							configCopied = true;
-							_config = new HttpClientConfig(config);
+							_config = new HttpClientConfig(_config);
 						}
 						ProxyProvider proxyProvider = proxyProviderSupplier.get();
 						_config.proxyProvider(proxyProvider);
@@ -292,7 +300,7 @@ class HttpClientConnect extends HttpClient {
 			  .subscribe(actual);
 		}
 
-		private void removeIncompatibleProtocol(HttpClientConfig config, HttpProtocol protocol) {
+		private static void removeIncompatibleProtocol(HttpClientConfig config, HttpProtocol protocol) {
 			List<HttpProtocol> newProtocols = new ArrayList<>();
 			for (int i = 0; i < config.protocols.length; i++) {
 				if (config.protocols[i] != protocol) {
@@ -522,10 +530,10 @@ class HttpClientConnect extends HttpClient {
 					uri = baseUrl + uri;
 				}
 
-				this.toURI = uriEndpointFactory.createUriEndpoint(uri, configuration.websocketClientSpec != null);
+				this.fromURI = this.toURI = uriEndpointFactory.createUriEndpoint(uri, configuration.websocketClientSpec != null);
 			}
 			else {
-				this.toURI = uriEndpointFactory.createUriEndpoint(configuration.uri, configuration.websocketClientSpec != null);
+				this.fromURI = this.toURI = uriEndpointFactory.createUriEndpoint(configuration.uri, configuration.websocketClientSpec != null);
 			}
 			this.resourceUrl = toURI.toExternalForm();
 		}
@@ -678,9 +686,8 @@ class HttpClientConnect extends HttpClient {
 				}
 			}
 			else {
-				toURITemp = uriEndpointFactory.createUriEndpoint(from, to, () -> address);
+				toURITemp = UriEndpointFactory.createUriEndpoint(from, to, () -> address);
 			}
-			fromURI = from;
 			toURI = toURITemp;
 			resourceUrl = toURITemp.toExternalForm();
 			this.redirectedFrom = addToRedirectedFromArray(redirectedFrom, from);

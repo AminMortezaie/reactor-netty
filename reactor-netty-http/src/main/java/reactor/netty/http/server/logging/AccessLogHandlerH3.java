@@ -18,9 +18,9 @@ package reactor.netty.http.server.logging;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.incubator.codec.http3.Http3DataFrame;
-import io.netty.incubator.codec.http3.Http3HeadersFrame;
-import io.netty.incubator.codec.quic.QuicChannel;
+import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3HeadersFrame;
+import io.netty.handler.codec.quic.QuicChannel;
 import org.jspecify.annotations.Nullable;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.server.HttpServerInfos;
@@ -79,7 +79,7 @@ final class AccessLogHandlerH3 extends BaseAccessLogHandler {
 
 			ChannelOperations<?, ?> ops = ChannelOperations.get(ctx.channel());
 			if (ops instanceof HttpServerInfos) {
-				super.applyServerInfos(accessLogArgProvider, (HttpServerInfos) ops);
+				applyServerInfos(accessLogArgProvider, (HttpServerInfos) ops);
 			}
 		}
 		if (msg instanceof Http3DataFrame) {

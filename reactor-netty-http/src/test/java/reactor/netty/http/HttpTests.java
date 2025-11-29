@@ -450,15 +450,15 @@ class HttpTests extends BaseHttpTest {
 		                               .protocol(HttpProtocol.HTTP11));
 	}
 
-	private void doTestHttpClientDefaultSslProvider(HttpClient client) {
+	private static void doTestHttpClientDefaultSslProvider(HttpClient client) {
 		AtomicBoolean channel = new AtomicBoolean();
 		StepVerifier.create(client.doOnRequest((req, conn) -> channel.set(conn.channel().parent() == null))
 		                          .get()
-		                          .uri("https://example.com/")
+		                          .uri("https://projectreactor.io/")
 		                          .responseContent()
 		                          .aggregate()
 		                          .asString())
-		            .expectNextMatches(s -> s.contains("Example Domain"))
+		            .expectNextMatches(s -> s.contains("Project Reactor"))
 		            .expectComplete()
 		            .verify(Duration.ofSeconds(30));
 

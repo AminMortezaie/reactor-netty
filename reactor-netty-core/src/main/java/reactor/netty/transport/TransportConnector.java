@@ -476,11 +476,9 @@ public final class TransportConnector {
 		}
 
 		@Override
-		@SuppressWarnings("NullAway")
+		@Nullable
 		public Throwable cause() {
 			Object result = this.result;
-			// Deliberately suppress "NullAway"
-			// The super method is not annotated
 			return result == SUCCESS ? null : (Throwable) result;
 		}
 
@@ -676,7 +674,7 @@ public final class TransportConnector {
 
 		static final Object SUCCESS = new Object();
 		static final AtomicReferenceFieldUpdater<MonoChannelPromise, @Nullable Object> RESULT_UPDATER =
-				AtomicReferenceFieldUpdater.newUpdater(MonoChannelPromise.class, Object.class, "result");
+				AtomicReferenceFieldUpdater.<MonoChannelPromise, @Nullable Object>newUpdater(MonoChannelPromise.class, Object.class, "result");
 		volatile @Nullable Object result;
 	}
 

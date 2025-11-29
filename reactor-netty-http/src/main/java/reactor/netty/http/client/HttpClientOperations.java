@@ -26,8 +26,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -40,11 +42,13 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.unix.DomainSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
+import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpConstants;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
@@ -92,6 +96,7 @@ import reactor.util.Logger;
 import reactor.util.Loggers;
 import reactor.util.context.ContextView;
 
+import static java.util.Objects.requireNonNull;
 import static reactor.netty.ReactorNetty.format;
 
 /**
@@ -161,6 +166,35 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		// no need to carry it over because it's considered as a terminal/concluding state.
 	}
 
+	HttpClientOperations(Connection c, ConnectionObserver listener, HttpClientOperations replaced) {
+		super(c, listener, replaced);
+		this.started = replaced.started;
+		this.retrying = replaced.retrying;
+		this.redirecting = replaced.redirecting;
+		this.redirectedFrom = replaced.redirectedFrom;
+		this.redirectRequestConsumer = replaced.redirectRequestConsumer;
+		this.previousRequestHeaders = replaced.previousRequestHeaders;
+		this.redirectRequestBiConsumer = replaced.redirectRequestBiConsumer;
+		this.isSecure = replaced.isSecure;
+		this.nettyRequest = replaced.nettyRequest;
+		this.responseState = replaced.responseState;
+		this.followRedirectPredicate = replaced.followRedirectPredicate;
+		this.requestHeaders = replaced.requestHeaders;
+		this.cookieEncoder = replaced.cookieEncoder;
+		this.cookieDecoder = replaced.cookieDecoder;
+		this.cookieList = replaced.cookieList;
+		this.resourceUrl = replaced.resourceUrl;
+		this.path = replaced.path;
+		this.responseTimeout = replaced.responseTimeout;
+		this.is100Continue = replaced.is100Continue;
+		this.trailerHeaders = replaced.trailerHeaders;
+		this.version = initHttpVersion(c);
+		// No need to copy the unprocessedOutboundError field from the replaced instance. The reason for this is that the
+		// "unprocessedOutboundError" field contains an error that occurs when the connection of the HttpClientOperations
+		// is already closed. In essence, this error represents the final state for the HttpClientOperations, and there's
+		// no need to carry it over because it's considered as a terminal/concluding state.
+	}
+
 	HttpClientOperations(Connection c, ConnectionObserver listener, ClientCookieEncoder encoder,
 			ClientCookieDecoder decoder, HttpMessageLogFactory httpMessageLogFactory) {
 		super(c, listener, httpMessageLogFactory);
@@ -172,30 +206,37 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
 		this.cookieList = new ArrayList<>();
+		this.version = initHttpVersion(c);
+		this.trailerHeaders = Sinks.unsafe().one();
+	}
+
+	private HttpVersion initHttpVersion(Connection c) {
+		HttpVersion version;
 		if (c.channel() instanceof Http2StreamChannel) {
-			this.version = H2;
+			version = H2;
 		}
 		else if (c.channel() instanceof SocketChannel || c.channel() instanceof DomainSocketChannel) {
-			HttpVersion version = this.nettyRequest.protocolVersion();
-			if (version.equals(HttpVersion.HTTP_1_0)) {
-				this.version = HttpVersion.HTTP_1_0;
+			HttpVersion protocolVersion = this.nettyRequest.protocolVersion();
+			if (protocolVersion.equals(HttpVersion.HTTP_1_0)) {
+				version = HttpVersion.HTTP_1_0;
 			}
-			else if (version.equals(HttpVersion.HTTP_1_1)) {
-				this.version = HttpVersion.HTTP_1_1;
+			else if (protocolVersion.equals(HttpVersion.HTTP_1_1)) {
+				version = HttpVersion.HTTP_1_1;
 			}
 			else {
-				throw new IllegalStateException(version.protocolName() + " not supported");
+				throw new IllegalStateException(protocolVersion.protocolName() + " not supported");
 			}
 		}
 		else {
-			this.version = H3;
+			version = H3;
 		}
-		this.trailerHeaders = Sinks.unsafe().one();
+		return version;
 	}
 
 	@Override
 	public HttpClientRequest addCookie(Cookie cookie) {
 		if (!hasSentHeaders()) {
+			this.cookieEncoder.encode(cookie);
 			this.cookieList.add(cookie);
 		}
 		else {
@@ -312,6 +353,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		if (log.isDebugEnabled()) {
 			log.debug(format(channel(), INBOUND_CANCEL_LOG));
 		}
+		// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+		// Whether there are subscribers or the subscriber cancels is not of interest
+		// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+		// FAIL_ZERO_SUBSCRIBER
+		trailerHeaders.tryEmitEmpty();
 		channel().close();
 	}
 
@@ -326,6 +372,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			listener().onStateChange(this, ConnectionObserver.State.DISCONNECTING);
 			return;
 		}
+		// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+		// Whether there are subscribers or the subscriber cancels is not of interest
+		// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+		// FAIL_ZERO_SUBSCRIBER
+		trailerHeaders.tryEmitEmpty();
 		listener().onStateChange(this, HttpClientState.RESPONSE_INCOMPLETE);
 		if (responseState == null) {
 			Throwable exception;
@@ -508,6 +559,31 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		return super.send(source);
 	}
 
+	@Override
+	public <S> NettyOutbound sendUsing(Callable<? extends S> sourceInput,
+			BiFunction<? super Connection, ? super S, ?> mappedInput,
+			Consumer<? super S> sourceCleanup) {
+		requireNonNull(sourceInput, "sourceInput");
+		requireNonNull(mappedInput, "mappedInput");
+		requireNonNull(sourceCleanup, "sourceCleanup");
+
+		return then(Mono.using(
+				sourceInput,
+				s -> {
+					if (!hasSentBody()) {
+						return FutureMono.from(channel().writeAndFlush(mappedInput.apply(this, s)));
+					}
+					else {
+						if (log.isDebugEnabled()) {
+							log.debug(format(channel(), "Dropped HTTP content, since request has been sent already."));
+						}
+						return Mono.empty();
+					}
+				},
+				sourceCleanup)
+		);
+	}
+
 	final URI websocketUri() {
 		URI uri;
 		try {
@@ -662,19 +738,35 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
 		}
 		listener().onStateChange(this, HttpClientState.REQUEST_SENT);
-		if (responseTimeout != null) {
-			if (channel().pipeline().get(NettyPipeline.HttpMetricsHandler) != null) {
-				if (channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) == null) {
-					channel().pipeline().addBefore(NettyPipeline.HttpMetricsHandler, NettyPipeline.ResponseTimeoutHandler,
-							new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS));
-					if (isPersistent()) {
-						onTerminate().subscribe(null, null, () -> removeHandler(NettyPipeline.ResponseTimeoutHandler));
-					}
-				}
+		ChannelPipeline pipeline = channel().pipeline();
+		if (responseTimeout != null && pipeline.get(NettyPipeline.ResponseTimeoutHandler) == null) {
+			// This handler has to be always as early as possible in order to handle correctly the time for receiving the read/readComplete events.
+			// We don't want other handlers to delay read/readComplete events delivery.
+			String baseName = null;
+			if (pipeline.get(NettyPipeline.HttpCodec) != null) {
+				baseName = NettyPipeline.HttpCodec;
+			}
+			else if (pipeline.get(NettyPipeline.H2ToHttp11Codec) != null) {
+					baseName = NettyPipeline.H2ToHttp11Codec;
+			}
+			else if (pipeline.get(NettyPipeline.H3ToHttp11Codec) != null) {
+				baseName = NettyPipeline.H3ToHttp11Codec;
 			}
 			else {
-				addHandlerFirst(NettyPipeline.ResponseTimeoutHandler,
-						new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS));
+				ChannelHandler httpClientCodec = pipeline.get(HttpClientCodec.class);
+				if (httpClientCodec != null) {
+					baseName = pipeline.context(httpClientCodec).name();
+				}
+			}
+			pipeline.addBefore(baseName, NettyPipeline.ResponseTimeoutHandler,
+					new ReadTimeoutHandler(responseTimeout.toMillis(), TimeUnit.MILLISECONDS));
+			if (log.isDebugEnabled()) {
+				log.debug(format(channel(), "Added encoder [{}] at the beginning of the user pipeline, full pipeline: {}"),
+						NettyPipeline.ResponseTimeoutHandler,
+						pipeline.names());
+			}
+			if (isPersistent()) {
+				onTerminate().subscribe(null, null, () -> removeHandler(NettyPipeline.ResponseTimeoutHandler));
 			}
 		}
 		channel().read();
@@ -706,6 +798,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			if (response.decoderResult().isFailure()) {
 				onInboundError(response.decoderResult().cause());
 				ReferenceCountUtil.release(msg);
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitEmpty();
 				terminate();
 				return;
 			}
@@ -763,6 +860,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				else {
 					request.release();
 				}
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitValue(request.trailingHeaders());
 				terminate();
 			}
 			return;
@@ -773,6 +875,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			if (lastHttpContent.decoderResult().isFailure()) {
 				onInboundError(lastHttpContent.decoderResult().cause());
 				lastHttpContent.release();
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitValue(lastHttpContent.trailingHeaders());
 				terminate();
 				return;
 			}

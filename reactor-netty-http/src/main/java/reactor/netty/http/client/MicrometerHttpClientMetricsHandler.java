@@ -187,7 +187,7 @@ final class MicrometerHttpClientMetricsHandler extends AbstractHttpClientMetrics
 				this.netPeerPort = "";
 			}
 			this.path = path;
-			this.proxyAddress = formatSocketAddress(proxyAddress);
+			this.proxyAddress = proxyAddress != null ? formatSocketAddress(proxyAddress) : null;
 			setCarrier(request);
 			setContextualName(HTTP_PREFIX + this.method);
 		}
@@ -199,7 +199,7 @@ final class MicrometerHttpClientMetricsHandler extends AbstractHttpClientMetrics
 
 		@Override
 		public @Nullable Timer getTimer() {
-			return recorder.getResponseTimeTimer(getName(), netPeerName + ":" + netPeerPort, proxyAddress == null ? NA : proxyAddress, path, method, status);
+			return recorder.getResponseTimeTimer(recorder.name() + RESPONSE_TIME, netPeerName + ":" + netPeerPort, proxyAddress == null ? NA : proxyAddress, path, method, status);
 		}
 
 		@Override

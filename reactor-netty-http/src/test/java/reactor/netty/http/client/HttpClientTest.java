@@ -397,7 +397,7 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(HttpClient.create()
 		                              .wiretap(true)
 		                              .get()
-		                              .uri("https://example.com")
+		                              .uri("https://projectreactor.io")
 		                              .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -406,7 +406,7 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(HttpClient.create()
 		                              .wiretap(true)
 		                              .get()
-		                              .uri("https://example.com")
+		                              .uri("https://projectreactor.io")
 		                              .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -1423,7 +1423,7 @@ class HttpClientTest extends BaseHttpTest {
 		};
 	}
 
-	private void doWithConnector_2(Publisher<String> content, String expectation) {
+	private static void doWithConnector_2(Publisher<String> content, String expectation) {
 		StepVerifier.create(content)
 		            .expectNext(expectation)
 		            .expectComplete()
@@ -1526,7 +1526,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestRetry(true, false);
 	}
 
-	private void doTestRetry(boolean retryDisabled, boolean expectRetry) throws Exception {
+	private static void doTestRetry(boolean retryDisabled, boolean expectRetry) throws Exception {
 		ExecutorService threadPool = Executors.newCachedThreadPool();
 		int serverPort = SocketUtils.findAvailableTcpPort();
 		ConnectionResetByPeerServer server = new ConnectionResetByPeerServer(serverPort);
@@ -2001,7 +2001,7 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(allowPartialChunks).as("allow partial chunks").isFalse();
 	}
 
-	private Object getValueReflection(Object obj, String fieldName, int superLevel) {
+	private static Object getValueReflection(Object obj, String fieldName, int superLevel) {
 		try {
 			Field field;
 			if (superLevel == 1) {
@@ -2213,7 +2213,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestIssue777_1(client, "/test", "Test", receiver);
 	}
 
-	private void doTestIssue777_1(HttpClient client, String uri, String expectation,
+	private static void doTestIssue777_1(HttpClient client, String uri, String expectation,
 			BiFunction<? super HttpClientResponse, ? super ByteBufMono, ? extends Mono<String>> receiver) {
 		StepVerifier.create(
 		        client.post()
@@ -2224,7 +2224,7 @@ class HttpClientTest extends BaseHttpTest {
 		            .verify(Duration.ofSeconds(30));
 	}
 
-	private void doTestIssue777_2(HttpClient client, String uri, String expectation,
+	private static void doTestIssue777_2(HttpClient client, String uri, String expectation,
 			BiFunction<? super HttpClientResponse, ? super ByteBufMono, ? extends Mono<Tuple2<String, HttpClientResponse>>> receiver) {
 		StepVerifier.create(
 		        client.post()
@@ -2889,7 +2889,7 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(onResponseError.get()).isNull();
 	}
 
-	private void checkExpectationsIssue1031(HttpClientInfos info, String expectedUri, int expectedRedirections,
+	private static void checkExpectationsIssue1031(HttpClientInfos info, String expectedUri, int expectedRedirections,
 			String expectedResourceUri, @Nullable String expectedLocation) {
 		assertThat(info).isNotNull();
 		assertThat(info.method()).isEqualTo(HttpMethod.GET);
@@ -2955,7 +2955,7 @@ class HttpClientTest extends BaseHttpTest {
 				          .wiretap(true);
 
 		StepVerifier.create(client.get()
-		                          .uri("https://example.com")
+		                          .uri("https://projectreactor.io")
 		                          .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -2963,7 +2963,7 @@ class HttpClientTest extends BaseHttpTest {
 
 		StepVerifier.create(client.runOn(loop, false)
 		                          .get()
-		                          .uri("https://example.com")
+		                          .uri("https://projectreactor.io")
 		                          .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -2972,7 +2972,7 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(client.runOn(loop, false)
 		                          .resolver(spec -> spec.trace("reactor.netty.testLoopAndResolver", LogLevel.DEBUG))
 		                          .get()
-		                          .uri("https://example.com")
+		                          .uri("https://projectreactor.io")
 		                          .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -3192,7 +3192,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestProtocolsAndDefaultSslProviderAvailability(client.protocol(HttpProtocol.H2C), null);
 	}
 
-	private void doTestProtocolsAndDefaultSslProviderAvailability(HttpClient client, @Nullable SslProvider sslProvider) {
+	private static void doTestProtocolsAndDefaultSslProviderAvailability(HttpClient client, @Nullable SslProvider sslProvider) {
 		assertThat(client.configuration().sslProvider()).isSameAs(sslProvider);
 	}
 
@@ -3395,7 +3395,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestIssue1697(client.responseTimeout(null), false, onRequest, onResponse, onDisconnected);
 	}
 
-	private void doTestIssue1697(HttpClient client, boolean hasTimeout, AtomicBoolean onRequest,
+	private static void doTestIssue1697(HttpClient client, boolean hasTimeout, AtomicBoolean onRequest,
 			AtomicBoolean onResponse, AtomicBoolean onDisconnected) {
 		String response =
 				client.post()
@@ -3650,9 +3650,11 @@ class HttpClientTest extends BaseHttpTest {
 		}
 	}
 
-	static void testIssue3285SendRequest(HttpClient client, @Nullable Class<? extends Throwable> exception) {
+	static void testIssue3285SendRequest(HttpClient client, @Nullable Class<? extends Throwable> exception) throws Exception {
+		CountDownLatch latch = new CountDownLatch(1);
 		Mono<String> response =
-				client.get()
+				client.doAfterResponseSuccess((res, conn) -> res.trailerHeaders().subscribe(null, null, latch::countDown))
+				      .get()
 				      .uri("/")
 				      .responseSingle((res, bytes) -> bytes.asString());
 		if (exception != null) {
@@ -3666,6 +3668,7 @@ class HttpClientTest extends BaseHttpTest {
 			        .expectComplete()
 			        .verify(Duration.ofSeconds(5));
 		}
+		assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 	}
 
 	@Test
@@ -3798,11 +3801,11 @@ class HttpClientTest extends BaseHttpTest {
 		          .wiretap(true)
 		          .resolvedAddressesSelector((config, resolvedAddresses) -> null)
 		          .get()
-		          .uri("https://example.com")
+		          .uri("https://projectreactor.io")
 		          .responseContent()
 		          .asString()
 		          .as(StepVerifier::create)
-		          .expectErrorMatches(t -> t.getMessage() != null && t.getMessage().startsWith("Failed to resolve [example.com"))
+		          .expectErrorMatches(t -> t.getMessage() != null && t.getMessage().startsWith("Failed to resolve [projectreactor.io:443"))
 		          .verify(Duration.ofSeconds(5));
 	}
 

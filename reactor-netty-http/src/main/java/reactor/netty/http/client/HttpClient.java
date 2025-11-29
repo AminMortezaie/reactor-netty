@@ -70,7 +70,6 @@ import reactor.netty.transport.ClientTransport;
 import reactor.netty.transport.ProxyProvider;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Incubating;
 
 import static reactor.netty.http.client.HttpClientConfig.h3;
 import static reactor.netty.http.internal.Http3.isHttp3Available;
@@ -858,19 +857,24 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Enables auto-redirect support if the passed
-	 * {@link java.util.function.Predicate} matches.
+	 * Enables auto-redirect support if the passed {@link BiPredicate} matches.
+	 *
+	 * <p>The redirect behavior is determined <strong>entirely</strong> by the result returned by the provided predicate.
+	 * The predicate receives the {@link HttpClientRequest} and {@link HttpClientResponse} and must return {@code true}
+	 * to enable auto-redirect for that specific request/response pair. This allows full control over which status codes
+	 * or conditions trigger a redirect.
 	 *
 	 * <p><strong>Note:</strong> The passed {@link HttpClientRequest} and {@link HttpClientResponse}
-	 * should be considered read-only and the implement SHOULD NOT consume or
+	 * should be considered read-only and the implementation SHOULD NOT consume or
 	 * write the request/response in this predicate.
 	 *
 	 * <p><strong>Note:</strong> The sensitive headers {@link #followRedirect(BiPredicate, Consumer) followRedirect}
 	 * are removed from the initialized request when redirecting to a different domain, they can be re-added
 	 * via {@link #followRedirect(BiPredicate, Consumer)}.
 	 *
-	 * @param predicate that returns true to enable auto-redirect support.
+	 * @param predicate that returns true to enable auto-redirect support for the given request/response pair.
 	 * @return a new {@link HttpClient}
+	 * @see #followRedirect(boolean) for automatic redirect on standard 30x status codes
 	 */
 	public final HttpClient followRedirect(BiPredicate<HttpClientRequest, HttpClientResponse> predicate) {
 		return followRedirect(predicate, (Consumer<HttpClientRequest>) null);
@@ -879,6 +883,11 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	/**
 	 * Variant of {@link #followRedirect(BiPredicate)} that also accepts
 	 * {@link BiConsumer} that provides the headers from the previous request and the current redirect request.
+	 *
+	 * <p>The redirect behavior is determined <strong>entirely</strong> by the result returned by the provided predicate.
+	 * The predicate receives the {@link HttpClientRequest} and {@link HttpClientResponse} and must return {@code true}
+	 * to enable auto-redirect for that specific request/response pair. This allows full control over which status codes
+	 * or conditions trigger a redirect.
 	 *
 	 * <p><strong>Note:</strong> The sensitive headers:
 	 * <ul>
@@ -890,7 +899,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * are removed from the initialized request when redirecting to a different domain,
 	 * they can be re-added using the {@link BiConsumer}.
 	 *
-	 * @param predicate that returns true to enable auto-redirect support.
+	 * @param predicate that returns true to enable auto-redirect support for the given request/response pair.
 	 * @param redirectRequestBiConsumer {@link BiConsumer}, invoked on redirects, after
 	 * the redirect request has been initialized, in order to apply further changes such as
 	 * add/remove headers and cookies; use {@link HttpClientRequest#redirectedFrom()} to
@@ -899,6 +908,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * and the current redirect request.
 	 * @return a new {@link HttpClient}
 	 * @since 0.9.12
+	 * @see #followRedirect(boolean, BiConsumer) for automatic redirect on standard 30x status codes
 	 */
 	public final HttpClient followRedirect(BiPredicate<HttpClientRequest, HttpClientResponse> predicate,
 			@Nullable BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer) {
@@ -914,6 +924,11 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * Variant of {@link #followRedirect(BiPredicate)} that also accepts a redirect request
 	 * processor.
 	 *
+	 * <p>The redirect behavior is determined <strong>entirely</strong> by the result returned by the provided predicate.
+	 * The predicate receives the {@link HttpClientRequest} and {@link HttpClientResponse} and must return {@code true}
+	 * to enable auto-redirect for that specific request/response pair. This allows full control over which status codes
+	 * or conditions trigger a redirect.
+	 *
 	 * <p><strong>Note:</strong> The sensitive headers:
 	 * <ul>
 	 *     <li>Expect</li>
@@ -924,7 +939,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * are removed from the initialized request when redirecting to a different domain,
 	 * they can be re-added using {@code redirectRequestConsumer}.
 	 *
-	 * @param predicate that returns true to enable auto-redirect support.
+	 * @param predicate that returns true to enable auto-redirect support for the given request/response pair.
 	 * @param redirectRequestConsumer redirect request consumer, invoked on redirects, after
 	 * the redirect request has been initialized, in order to apply further changes such as
 	 * add/remove headers and cookies; use {@link HttpClientRequest#redirectedFrom()} to
@@ -932,6 +947,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * is in progress.
 	 * @return a new {@link HttpClient}
 	 * @since 0.9.5
+	 * @see #followRedirect(boolean, Consumer) for automatic redirect on standard 30x status codes
 	 */
 	public final HttpClient followRedirect(BiPredicate<HttpClientRequest, HttpClientResponse> predicate,
 			@Nullable Consumer<HttpClientRequest> redirectRequestConsumer) {
@@ -946,13 +962,18 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	/**
 	 * Specifies whether HTTP status 301|302|303|307|308 auto-redirect support is enabled.
 	 *
+	 * <p>When enabled, this method uses a built-in predicate that automatically checks
+	 * if the response status code is 301, 302, 303, 307, or 308 and follows the redirect accordingly.
+	 * When the status code is 303, the {@code GET} method is used for the redirect.
+	 *
 	 * <p><strong>Note:</strong> The sensitive headers {@link #followRedirect(boolean, Consumer) followRedirect}
 	 * are removed from the initialized request when redirecting to a different domain, they can be re-added
 	 * via {@link #followRedirect(boolean, Consumer)}.
 	 *
-	 * @param followRedirect if true HTTP status 301|302|307|308 auto-redirect support
+	 * @param followRedirect if true, HTTP status 301|302|303|307|308 auto-redirect support
 	 * is enabled, otherwise disabled (default: false).
 	 * @return a new {@link HttpClient}
+	 * @see #followRedirect(BiPredicate) for custom redirect logic based on a user-provided predicate
 	 */
 	public final HttpClient followRedirect(boolean followRedirect) {
 		if (!followRedirect && configuration().followRedirectPredicate == null &&
@@ -967,6 +988,10 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * Variant of {@link #followRedirect(boolean)} that also accepts
 	 * {@link BiConsumer} that provides the headers from the previous request and the current redirect request.
 	 *
+	 * <p>When enabled, this method uses a built-in predicate that automatically checks
+	 * if the response status code is 301, 302, 303, 307, or 308 and follows the redirect accordingly.
+	 * When the status code is 303, the {@code GET} method is used for the redirect.
+	 *
 	 * <p><strong>Note:</strong> The sensitive headers:
 	 * <ul>
 	 *     <li>Expect</li>
@@ -977,7 +1002,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * are removed from the initialized request when redirecting to a different domain,
 	 * they can be re-added using the {@link BiConsumer}.
 	 *
-	 * @param followRedirect if true HTTP status 301|302|307|308 auto-redirect support
+	 * @param followRedirect if true, HTTP status 301|302|303|307|308 auto-redirect support
 	 *                       is enabled, otherwise disabled (default: false).
 	 * @param redirectRequestBiConsumer {@link BiConsumer}, invoked on redirects, after
 	 * the redirect request has been initialized, in order to apply further changes such as
@@ -987,6 +1012,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * and the current redirect request.
 	 * @return a new {@link HttpClient}
 	 * @since 0.9.12
+	 * @see #followRedirect(BiPredicate, BiConsumer) for custom redirect logic based on a user-provided predicate
 	 */
 	public final HttpClient followRedirect(boolean followRedirect,
 			@Nullable BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer) {
@@ -1006,6 +1032,10 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * Variant of {@link #followRedirect(boolean)} that also accepts a redirect request
 	 * processor.
 	 *
+	 * <p>When enabled, this method uses a built-in predicate that automatically checks
+	 * if the response status code is 301, 302, 303, 307, or 308 and follows the redirect accordingly.
+	 * When the status code is 303, the {@code GET} method is used for the redirect.
+	 *
 	 * <p><strong>Note:</strong> The sensitive headers:
 	 * <ul>
 	 *     <li>Expect</li>
@@ -1016,7 +1046,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * are removed from the initialized request when redirecting to a different domain,
 	 * they can be re-added using {@code redirectRequestConsumer}.
 	 *
-	 * @param followRedirect if true HTTP status 301|302|307|308 auto-redirect support
+	 * @param followRedirect if true, HTTP status 301|302|303|307|308 auto-redirect support
 	 * is enabled, otherwise disabled (default: false).
 	 * @param redirectRequestConsumer redirect request consumer, invoked on redirects, after
 	 * the redirect request has been initialized, in order to apply further changes such as
@@ -1025,6 +1055,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * is in progress.
 	 * @return a new {@link HttpClient}
 	 * @since 0.9.5
+	 * @see #followRedirect(BiPredicate, Consumer) for custom redirect logic based on a user-provided predicate
 	 */
 	public final HttpClient followRedirect(boolean followRedirect, @Nullable Consumer<HttpClientRequest> redirectRequestConsumer) {
 		if (followRedirect) {
@@ -1121,12 +1152,11 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * @return a new {@link HttpClient}
 	 * @since 1.2.0
 	 */
-	@Incubating
 	public final HttpClient http3Settings(Consumer<Http3SettingsSpec.Builder> http3Settings) {
 		Objects.requireNonNull(http3Settings, "http3Settings");
 		if (!isHttp3Available()) {
 			throw new UnsupportedOperationException(
-					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+					"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 							" to the class path first");
 		}
 		Http3SettingsSpec.Builder builder = Http3SettingsSpec.builder();
@@ -1383,7 +1413,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		if (config.checkProtocol(h3)) {
 			if (!isHttp3Available()) {
 				throw new UnsupportedOperationException(
-						"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+						"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 								" to the class path first");
 			}
 

@@ -35,6 +35,7 @@ import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2Connection;
@@ -67,9 +68,11 @@ import reactor.netty.ByteBufFlux;
 import reactor.netty.ByteBufMono;
 import reactor.netty.Connection;
 import reactor.netty.LogTracker;
+import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientConfig;
+import reactor.netty.http.client.HttpClientRequest;
 import reactor.netty.http.client.HttpClientResponse;
 import reactor.netty.http.client.PrematureCloseException;
 import reactor.netty.http.server.ConnectionInformation;
@@ -89,6 +92,9 @@ import java.lang.annotation.Target;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -630,7 +636,86 @@ class HttpProtocolsTests extends BaseHttpTest {
 	}
 
 	@ParameterizedCompatibleCombinationsTest
-	void testTrailerHeadersFullResponse(HttpServer server, HttpClient client) {
+	void testTrailerHeadersFullResponseSend(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.route(r ->
+				          r.get("/1", (req, res) ->
+				               res.header(HttpHeaderNames.TRAILER, "foo")
+				                  .trailerHeaders(h -> h.set("foo", "bar"))
+				                  .send())
+				           .get("/2", (req, res) -> res.send()))
+				      .bindNow();
+
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		HttpClient localClient = client.port(disposableServer.port());
+		doTestTrailerHeaders(localClient, "/1", isHttp11 ? "empty" : "bar", "empty");
+
+		doTestTrailerHeaders(localClient, "/2", "empty", "empty");
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testTrailerHeadersFullResponseSendFluxContentAlwaysEmpty(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.route(r ->
+				          r.get("/1", (req, res) ->
+				               res.header(HttpHeaderNames.TRAILER, "foo")
+				                  .trailerHeaders(h -> h.set("foo", "bar"))
+				                  .status(HttpResponseStatus.NO_CONTENT)
+				                  .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response")))
+				           .get("/2", (req, res) ->
+				               res.status(HttpResponseStatus.NO_CONTENT)
+				                  .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response"))))
+				      .bindNow();
+
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		doTestTrailerHeaders(client.port(disposableServer.port()), "/1", isHttp11 ? "empty" : "bar", "empty");
+
+		doTestTrailerHeaders(client.port(disposableServer.port()), "/2", "empty", "empty");
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testTrailerHeadersFullResponseSendFluxContentLengthZero(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.route(r ->
+				          r.get("/1", (req, res) ->
+				               res.header(HttpHeaderNames.TRAILER, "foo")
+				                  .header(HttpHeaderNames.CONTENT_LENGTH, "0")
+				                  .trailerHeaders(h -> h.set("foo", "bar"))
+				                  .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response")))
+				           .get("/2", (req, res) ->
+				               res.header(HttpHeaderNames.CONTENT_LENGTH, "0")
+				                  .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response"))))
+				      .bindNow();
+
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		doTestTrailerHeaders(client.port(disposableServer.port()), "/1", isHttp11 ? "empty" : "bar", "empty");
+
+		doTestTrailerHeaders(client.port(disposableServer.port()), "/2", "empty", "empty");
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testTrailerHeadersFullResponseSendHeaders(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.handle((req, res) ->
+				          res.header(HttpHeaderNames.TRAILER, "foo")
+				             .trailerHeaders(h -> h.set("foo", "bar"))
+				             .sendHeaders())
+				      .bindNow();
+
+		doTestTrailerHeaders(client.port(disposableServer.port()), "bar", "empty");
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testTrailerHeadersFullResponseSendMono(HttpServer server, HttpClient client) {
 		disposableServer =
 				server.handle((req, res) ->
 				          res.header(HttpHeaderNames.TRAILER, "foo")
@@ -638,13 +723,58 @@ class HttpProtocolsTests extends BaseHttpTest {
 				             .sendString(Mono.just("testTrailerHeadersFullResponse")))
 				      .bindNow();
 
-		doTestTrailerHeaders(client.port(disposableServer.port()), "empty", "testTrailerHeadersFullResponse");
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		doTestTrailerHeaders(client.port(disposableServer.port()), isHttp11 ? "empty" : "bar", "testTrailerHeadersFullResponse");
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testTrailerHeadersFullResponseSendMonoEmpty(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.route(r ->
+				          r.get("/1", (req, res) -> {
+				               res.header(HttpHeaderNames.TRAILER, "foo")
+				                  .trailerHeaders(h -> h.set("foo", "bar"));
+				               return Mono.empty();
+				           })
+				           .get("/2", (req, res) -> Mono.empty()))
+				      .bindNow();
+
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		doTestTrailerHeaders(client.port(disposableServer.port()), "/1", isHttp11 ? "empty" : "bar", "empty");
+
+		doTestTrailerHeaders(client.port(disposableServer.port()), "/2", "empty", "empty");
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testTrailerHeadersFullResponseSendObject(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.handle((req, res) ->
+				          res.header(HttpHeaderNames.TRAILER, "foo")
+				             .trailerHeaders(h -> h.set("foo", "bar"))
+				             .sendObject(Unpooled.wrappedBuffer("testTrailerHeadersFullResponse".getBytes(Charset.defaultCharset()))))
+				      .bindNow();
+
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		doTestTrailerHeaders(client.port(disposableServer.port()), isHttp11 ? "empty" : "bar", "testTrailerHeadersFullResponse");
 	}
 
 	private static void doTestTrailerHeaders(HttpClient client, String expectedHeaderValue, String expectedResponse) {
+		doTestTrailerHeaders(client, "/", expectedHeaderValue, expectedResponse);
+	}
+
+	private static void doTestTrailerHeaders(HttpClient client, String uri, String expectedHeaderValue, String expectedResponse) {
 		client.get()
-		      .uri("/")
-		      .responseSingle((res, bytes) -> bytes.asString().zipWith(res.trailerHeaders()))
+		      .uri(uri)
+		      .responseSingle((res, bytes) -> bytes.asString().defaultIfEmpty("empty").zipWith(res.trailerHeaders()))
 		      .as(StepVerifier::create)
 		      .expectNextMatches(t -> expectedResponse.equals(t.getT1()) &&
 		              expectedHeaderValue.equals(t.getT2().get("foo", "empty")))
@@ -1187,6 +1317,108 @@ class HttpProtocolsTests extends BaseHttpTest {
 			assertThat(requestHeaders.get().get(HttpHeaderNames.CONTENT_LENGTH)).isNull();
 			assertThat(requestHeaders.get().get(HttpHeaderNames.TRANSFER_ENCODING)).isNotNull();
 		}
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void clientDropsEmptyFileChunked(HttpServer server, HttpClient client) throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		clientDropsFile(server, client, (req, out) -> out.sendFileChunked(path, 0, 0));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void clientDropsEmptyFileDefault(HttpServer server, HttpClient client) throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		clientDropsFile(server, client, (req, out) -> out.sendFile(path));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void clientDropsFileChunked(HttpServer server, HttpClient client) throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		clientDropsFile(server, client, (req, out) -> out.sendFileChunked(path, 0, 0));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void clientDropsFileDefault(HttpServer server, HttpClient client) throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		clientDropsFile(server, client, (req, out) -> out.sendFile(path));
+	}
+
+	private void clientDropsFile(HttpServer server, HttpClient client,
+			BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> sender) {
+		disposableServer =
+				server.route(r -> r.post("/", (req, res) ->
+				          res.sendString(req.receive()
+				                            .aggregate()
+				                            .asString()
+				                            .defaultIfEmpty("empty"))))
+				      .bindNow();
+
+		client.port(disposableServer.port())
+		      .headers(h -> h.set(HttpHeaderNames.CONTENT_LENGTH, "0"))
+		      .post()
+		      .uri("/")
+		      .send(sender)
+		      .responseSingle((res, buf) -> buf.asString())
+		      .as(StepVerifier::create)
+		      .expectNext("empty")
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void serverDropsEmptyFileChunked(HttpServer server, HttpClient client) throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		serverDropsFile(server, client,
+				(req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFileChunked(path, 0, 0));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void serverDropsEmptyFileDefault(HttpServer server, HttpClient client) throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		serverDropsFile(server, client,
+				(req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFile(path));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void serverDropsFileChunked(HttpServer server, HttpClient client) throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		serverDropsFile(server, client,
+				(req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFileChunked(path, 0, 0));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void serverDropsFileDefault(HttpServer server, HttpClient client) throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		serverDropsFile(server, client,
+				(req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFile(path));
+	}
+
+	private void serverDropsFile(HttpServer server, HttpClient client,
+			BiFunction<? super HttpServerRequest, ? super HttpServerResponse, ? extends Publisher<Void>> sender) {
+		disposableServer =
+				server.route(r -> r.get("/", sender))
+				      .bindNow();
+
+		client.port(disposableServer.port())
+		      .get()
+		      .uri("/")
+		      .responseSingle((res, buf) -> buf.asString().defaultIfEmpty("empty"))
+		      .as(StepVerifier::create)
+		      .expectNext("empty")
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
 	}
 
 	static final class IdleTimeoutTestChannelInboundHandler extends ChannelInboundHandlerAdapter {

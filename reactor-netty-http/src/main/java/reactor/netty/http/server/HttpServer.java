@@ -60,7 +60,6 @@ import reactor.netty.tcp.TcpServer;
 import reactor.netty.transport.ServerTransport;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Incubating;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
@@ -343,14 +342,29 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	}
 
 	/**
-	 * Specifies GZip, Deflate, ZSTD compression option
-	 * with {@link reactor.netty.http.server.compression.GzipOption}, {@link reactor.netty.http.server.compression.DeflateOption},
-	 * {@link reactor.netty.http.server.compression.ZstdOption}.
+	 * Specifies compression options for GZip, Deflate, Brotli, and Zstd algorithms.
+	 * The server supports the following compression algorithms:
+	 * <ul>
+	 * <li>{@link reactor.netty.http.server.compression.GzipOption} - always available, configurable</li>
+	 * <li>{@link reactor.netty.http.server.compression.DeflateOption} - always available, configurable</li>
+	 * <li>Brotli - available when the {@code com.aayushatharva.brotli4j:brotli4j} dependency is present,
+	 * uses default settings (no explicit configuration needed)</li>
+	 * <li>{@link reactor.netty.http.server.compression.ZstdOption} - available when the
+	 * {@code com.github.luben:zstd-jni} dependency is present, configurable</li>
+	 * </ul>
 	 *
-	 * @param compressionOptions configures {@link HttpCompressionOption} after enable compress
+	 * <p><b>Brotli and Zstd Availability:</b></p>
+	 * <ul>
+	 * <li>Brotli becomes available only when the Brotli4j native library is present on the classpath.</li>
+	 * <li>Zstd becomes available only when the Zstd-jni native library to be present on the classpath.</li>
+	 * <li>When these dependencies are not available, the respective compression algorithms will be silently skipped.</li>
+	 * </ul>
+	 *
+	 * @param compressionOptions configures {@link HttpCompressionOption} after enabling compression
 	 *
 	 * <pre>
 	 * {@code
+	 * // Example with GZip and Zstd (when Zstd is available)
 	 * HttpServer.create()
 	 *           .compress(true)
 	 *           .compressOptions(
@@ -577,12 +591,11 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * @return a new {@link HttpServer}
 	 * @since 1.2.0
 	 */
-	@Incubating
 	public final HttpServer http3Settings(Consumer<Http3SettingsSpec.Builder> http3Settings) {
 		Objects.requireNonNull(http3Settings, "http3Settings");
 		if (!isHttp3Available()) {
 			throw new UnsupportedOperationException(
-					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+					"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 							" to the class path first");
 		}
 		Http3SettingsSpec.Builder builder = Http3SettingsSpec.builder();
@@ -959,7 +972,7 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		dup.configuration().protocols(supportedProtocols);
 		if ((dup.configuration()._protocols & h3) == h3 && !isHttp3Available()) {
 			throw new UnsupportedOperationException(
-					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+					"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 							" to the class path first");
 		}
 		return dup;

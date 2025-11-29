@@ -45,6 +45,8 @@ import org.jspecify.annotations.Nullable;
 import reactor.netty.NettyPipeline;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
 
+import static io.netty.handler.codec.http.HttpHeaderNames.PROXY_AUTHORIZATION;
+
 /**
  * Proxy configuration.
  *
@@ -66,6 +68,8 @@ public final class ProxyProvider {
 	final SocketAddress address;
 	final Predicate<SocketAddress> nonProxyHostPredicate;
 	final @Nullable HttpHeaders httpHeaders;
+	final @Nullable HttpHeaders httpHeadersNoProxyAuthorization;
+	final @Nullable Integer proxyAuthorizationHeaderUID;
 	final Proxy type;
 	final long connectTimeoutMillis;
 
@@ -85,6 +89,23 @@ public final class ProxyProvider {
 			this.address = builder.address.get();
 		}
 		this.httpHeaders = builder.httpHeaders.get();
+		if (builder.proxyAuthorizationHeaderUIDFunction != null && this.httpHeaders != null) {
+			String proxyAuthorizationHeader = this.httpHeaders.get(PROXY_AUTHORIZATION);
+			if (proxyAuthorizationHeader != null) {
+				this.httpHeadersNoProxyAuthorization = this.httpHeaders.copy();
+				this.httpHeadersNoProxyAuthorization.remove(PROXY_AUTHORIZATION);
+				this.proxyAuthorizationHeaderUID =
+						builder.proxyAuthorizationHeaderUIDFunction.apply(proxyAuthorizationHeader);
+			}
+			else {
+				this.httpHeadersNoProxyAuthorization = null;
+				this.proxyAuthorizationHeaderUID = null;
+			}
+		}
+		else {
+			this.httpHeadersNoProxyAuthorization = null;
+			this.proxyAuthorizationHeaderUID = null;
+		}
 		if (builder.type != null) {
 			this.type = builder.type;
 		}
@@ -235,7 +256,7 @@ public final class ProxyProvider {
 				Objects.equals(password, that.password) &&
 				Objects.equals(address, that.address) &&
 				getNonProxyHostsValue() == that.getNonProxyHostsValue() &&
-				Objects.equals(httpHeaders, that.httpHeaders) &&
+				compareHttpHeaders(that) &&
 				type == that.type &&
 				connectTimeoutMillis == that.connectTimeoutMillis;
 	}
@@ -247,7 +268,13 @@ public final class ProxyProvider {
 		result = 31 * result + Objects.hashCode(password);
 		result = 31 * result + Objects.hashCode(address);
 		result = 31 * result + Boolean.hashCode(getNonProxyHostsValue());
-		result = 31 * result + Objects.hashCode(httpHeaders);
+		if (proxyAuthorizationHeaderUID == null) {
+			result = 31 * result + Objects.hashCode(httpHeaders);
+		}
+		else {
+			result = 31 * result + Objects.hashCode(httpHeadersNoProxyAuthorization);
+			result = 31 * result + Objects.hashCode(proxyAuthorizationHeaderUID);
+		}
 		result = 31 * result + Objects.hashCode(type);
 		result = 31 * result + Long.hashCode(connectTimeoutMillis);
 		return result;
@@ -255,6 +282,16 @@ public final class ProxyProvider {
 
 	private boolean getNonProxyHostsValue() {
 		return nonProxyHostPredicate.test(address);
+	}
+
+	private boolean compareHttpHeaders(ProxyProvider that) {
+		if (proxyAuthorizationHeaderUID == null && that.proxyAuthorizationHeaderUID == null) {
+			return Objects.equals(httpHeaders, that.httpHeaders);
+		}
+		else {
+			return Objects.equals(proxyAuthorizationHeaderUID, that.proxyAuthorizationHeaderUID) &&
+					Objects.equals(httpHeadersNoProxyAuthorization, that.httpHeadersNoProxyAuthorization);
+		}
 	}
 
 	private @Nullable String getPasswordValue(@Nullable Function<? super String, ? extends String> passwordFunction) {
@@ -287,7 +324,7 @@ public final class ProxyProvider {
 	static final String SOCKS_USERNAME = "java.net.socks.username";
 	static final String SOCKS_PASSWORD = "java.net.socks.password";
 
-	static @Nullable ProxyProvider createFrom(Properties properties) {
+	static @Nullable Supplier<ProxyProvider> createFrom(Properties properties) {
 		Objects.requireNonNull(properties, "properties");
 
 		if (properties.containsKey(HTTP_PROXY_HOST) || properties.containsKey(HTTPS_PROXY_HOST)) {
@@ -303,7 +340,7 @@ public final class ProxyProvider {
 	/*
 		assumes properties has either http.proxyHost or https.proxyHost
 	 */
-	static ProxyProvider createHttpProxyFrom(Properties properties) {
+	static Supplier<ProxyProvider> createHttpProxyFrom(Properties properties) {
 		String hostProperty;
 		String portProperty;
 		String userProperty;
@@ -347,10 +384,10 @@ public final class ProxyProvider {
 			}
 		}
 
-		return proxy.build();
+		return proxy::build;
 	}
 
-	static ProxyProvider createSocksProxyFrom(Properties properties) {
+	static Supplier<ProxyProvider> createSocksProxyFrom(Properties properties) {
 		String hostname = Objects.requireNonNull(properties.getProperty(SOCKS_PROXY_HOST), SOCKS_PROXY_HOST);
 		String version = properties.getProperty(SOCKS_VERSION, SOCKS_VERSION_5);
 		if (!SOCKS_VERSION_5.equals(version) && !SOCKS_VERSION_4.equals(version)) {
@@ -373,7 +410,7 @@ public final class ProxyProvider {
 			proxy.password(properties.getProperty(SOCKS_PASSWORD));
 		}
 
-		return proxy.build();
+		return proxy::build;
 	}
 
 	static int parsePort(String port, String propertyName) {
@@ -408,6 +445,7 @@ public final class ProxyProvider {
 		@Nullable Supplier<? extends SocketAddress> address;
 		Predicate<SocketAddress> nonProxyHostPredicate = ALWAYS_PROXY;
 		Supplier<? extends @Nullable HttpHeaders> httpHeaders = NO_HTTP_HEADERS;
+		@Nullable Function<String, Integer> proxyAuthorizationHeaderUIDFunction;
 		@Nullable Proxy type;
 		long connectTimeoutMillis = 10000;
 
@@ -497,6 +535,13 @@ public final class ProxyProvider {
 					}
 				};
 			}
+			return this;
+		}
+
+		@Override
+		public Builder httpHeaders(Consumer<HttpHeaders> headers, Function<String, Integer> proxyAuthorizationHeaderUIDFunction) {
+			httpHeaders(headers);
+			this.proxyAuthorizationHeaderUIDFunction = Objects.requireNonNull(proxyAuthorizationHeaderUIDFunction, "proxyAuthorizationHeaderUIDFunction");
 			return this;
 		}
 
@@ -719,6 +764,18 @@ public final class ProxyProvider {
 		 * @return {@code this}
 		 */
 		Builder httpHeaders(Consumer<HttpHeaders> headers);
+
+		/**
+		 * A consumer to add request headers for the http proxy.
+		 *
+		 * @param headers A consumer to add request headers for the http proxy
+		 * @param proxyAuthorizationHeaderUIDFunction A function to provide the UID for {@code Proxy-Authorization} header value.
+		 * This function should return a consistent identifier for logically equivalent authorization values,
+		 * enabling stable hashCode computation even when the actual token value changes due to renewal.
+		 * @return {@code this}
+		 * @since 1.2.11
+		 */
+		Builder httpHeaders(Consumer<HttpHeaders> headers, Function<String, Integer> proxyAuthorizationHeaderUIDFunction);
 
 		/**
 		 * The proxy connect timeout in millis. Default to 10000 ms.

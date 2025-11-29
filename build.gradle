@@ -23,16 +23,16 @@ buildscript {
 		maven { url "https://repo.spring.io/plugins-release" }
 	}
 	dependencies {
-		classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:4.34.1' //applied in individual submodules
+		classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:4.35.5' //applied in individual submodules
 	}
 }
 
 plugins {
 	id "com.diffplug.spotless" version "6.13.0"
 	id 'com.google.osdetector' version '1.7.3'
-	id 'org.gradle.test-retry' version '1.6.2'
+	id 'org.gradle.test-retry' version '1.6.4'
 	id 'io.spring.nohttp' version '0.0.11'
-	id 'com.gradleup.shadow' version '8.3.6' apply false
+	id 'com.gradleup.shadow' version '8.3.9' apply false
 	//we now need version of Artifactory gradle plugin deployed on Maven Central, see above
 	id 'me.champeau.gradle.japicmp' version '0.4.6' apply false
 	id 'de.undercouch.download' version '5.6.0' apply false
@@ -41,7 +41,7 @@ plugins {
 	id 'biz.aQute.bnd.builder' version '6.4.0' apply false
 	id 'org.graalvm.buildtools.native' version '0.9.25' apply false
 	id 'io.spring.antora.generate-antora-yml' version '0.0.1' apply false
-	id 'net.ltgt.errorprone' version '4.2.0' apply false
+	id 'net.ltgt.errorprone' version '4.3.0' apply false
 	id 'me.champeau.mrjar' version '0.1.1' apply false
 }
 
@@ -86,11 +86,11 @@ ext {
 	}
 
 	//Metrics
-	micrometerVersion = '1.15.0' //optional baseline
-	micrometerTracingVersion = '1.5.0' //optional baseline
+	micrometerVersion = '1.16.0' //optional baseline
+	micrometerTracingVersion = '1.6.0' //optional baseline
 	micrometerDocsVersion = '1.0.4' //optional baseline
 
-	contextPropagationDefaultVersion = '1.1.0' //optional baseline
+	contextPropagationDefaultVersion = '1.2.0' //optional baseline
 	if (!project.hasProperty("forceContextPropagationVersion")) {
 		contextPropagationVersion = contextPropagationDefaultVersion
 	}
@@ -109,7 +109,7 @@ ext {
 	logbackVersion = '1.2.13'
 
 	// Netty
-	nettyDefaultVersion = '4.2.2.Final'
+	nettyDefaultVersion = '4.2.7.Final'
 	if (!project.hasProperty("forceNettyVersion")) {
 		nettyVersion = nettyDefaultVersion
 	}
@@ -118,26 +118,25 @@ ext {
 		println "Netty version defined from command line: ${forceNettyVersion}"
 	}
 	nettyIoUringVersion = '0.0.26.Final'
-	nettyHttp3Version = '0.0.29.Final'
 
 	// Testing
-	brotli4jVersion = '1.18.0'
-	zstdJniVersion = '1.5.7-3'
-	jacksonDatabindVersion = '2.19.0'
+	brotli4jVersion = '1.20.0'
+	zstdJniVersion = '1.5.7-6'
+	jacksonDatabindVersion = '2.20.1'
 	testAddonVersion = reactorCoreVersion
-	assertJVersion = '3.27.3'
+	assertJVersion = '3.27.6'
 	awaitilityVersion = '4.3.0'
 	hoverflyJavaVersion = '0.19.1'
-	tomcatVersion = '9.0.105'
-	boringSslVersion = '2.0.72.Final'
-	junitVersion = '5.13.0'
-	junitPlatformLauncherVersion = '1.13.0'
+	tomcatVersion = '9.0.112'
+	boringSslVersion = '2.0.74.Final'
+	junitVersion = '5.14.1'
+	junitPlatformLauncherVersion = '1.14.1'
 	mockitoVersion = '4.11.0'
-	blockHoundVersion = '1.0.13.RELEASE'
+	blockHoundVersion = '1.0.15.RELEASE'
 	reflectionsVersion = '0.10.2'
 	errorproneCoreVersion = '2.10.0'
 	errorproneGuavaVersion = '30.0-jre'
-	bouncycastleVersion = '1.81'
+	bouncycastleVersion = '1.83'
 
 	// Antora
 	antoraPluginVersion = '1.0.0'
@@ -211,7 +210,7 @@ subprojects {
 	}
 
 	jacoco {
-		toolVersion = '0.8.7'
+		toolVersion = '0.8.13'
 	}
 
 	jacocoTestReport {
@@ -331,6 +330,10 @@ subprojects {
 			attributes("Created-By": "${System.getProperty("java.version")} (${System.getProperty("java.specification.vendor")})",
 					"Implementation-Title": project.name,
 					"Implementation-Version": project.version)
+		}
+		from("${rootDir}/docs/src/docs/dist") {
+			include "LICENSE"
+			into "META-INF"
 		}
 	}
 

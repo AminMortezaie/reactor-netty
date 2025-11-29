@@ -29,13 +29,14 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.ssl.SniCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
-import io.netty.incubator.codec.http3.Http3DataFrame;
-import io.netty.incubator.codec.http3.Http3HeadersFrame;
-import io.netty.incubator.codec.quic.InsecureQuicTokenHandler;
-import io.netty.incubator.codec.quic.QuicChannel;
+import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3HeadersFrame;
+import io.netty.handler.codec.quic.InsecureQuicTokenHandler;
+import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.pkitesting.CertificateBuilder;
 import io.netty.pkitesting.X509Bundle;
 import org.jspecify.annotations.Nullable;
@@ -50,10 +51,13 @@ import reactor.core.publisher.Signal;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.ByteBufMono;
+import reactor.netty.Connection;
 import reactor.netty.DisposableServer;
 import reactor.netty.LogTracker;
+import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
+import reactor.netty.http.client.HttpClientRequest;
 import reactor.netty.http.client.HttpClientResponse;
 import reactor.netty.http.client.HttpConnectionPoolMetrics;
 import reactor.netty.http.client.HttpMeterRegistrarAdapter;
@@ -71,6 +75,9 @@ import javax.net.ssl.SNIHostName;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -78,10 +85,13 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static reactor.netty.Metrics.DATA_RECEIVED_TIME;
@@ -775,14 +785,75 @@ class Http3Tests {
 	}
 
 	@Test
+	void testResponseTimeout() throws Exception {
+		disposableServer =
+				createServer().handle((req, res) -> res.sendString(Mono.just("testResponseTimeout")))
+				              .bindNow();
+
+		HttpClient client = createClient(disposableServer.port()).responseTimeout(Duration.ofMillis(100));
+		doTestResponseTimeout(client, 100);
+
+		client = client.doOnRequest((req, conn) -> req.responseTimeout(Duration.ofMillis(200)));
+		doTestResponseTimeout(client, 200);
+	}
+
+	private static void doTestResponseTimeout(HttpClient client, long expectedTimeout) throws Exception {
+		AtomicBoolean onRequest = new AtomicBoolean();
+		AtomicBoolean onResponse = new AtomicBoolean();
+		AtomicBoolean onDisconnected = new AtomicBoolean();
+		AtomicLong timeout = new AtomicLong();
+		Predicate<Connection> handlerAvailable =
+				conn -> conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null;
+		HttpClient localClient =
+				client.doOnRequest((req, conn) -> onRequest.set(handlerAvailable.test(conn)))
+				      .doOnResponse((req, conn) -> {
+				          if (handlerAvailable.test(conn)) {
+				              ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler);
+				              onResponse.set(true);
+				              timeout.set(((ReadTimeoutHandler) handler).getReaderIdleTimeInMillis());
+				          }
+				      })
+				      .doOnDisconnected(conn -> onDisconnected.set(conn.channel().isActive() && handlerAvailable.test(conn)));
+
+		Mono<String> response =
+				localClient.get()
+				           .uri("/")
+				           .responseContent()
+				           .aggregate()
+				           .asString();
+
+		StepVerifier.create(response)
+		            .expectNext("testResponseTimeout")
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(30));
+
+		assertThat(onRequest.get()).isFalse();
+		assertThat(onResponse.get()).isTrue();
+		assertThat(onDisconnected.get()).isFalse();
+		assertThat(timeout.get()).isEqualTo(expectedTimeout);
+
+		Thread.sleep(expectedTimeout + 50);
+
+		StepVerifier.create(response)
+		            .expectNext("testResponseTimeout")
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(30));
+
+		assertThat(onRequest.get()).isFalse();
+		assertThat(onResponse.get()).isTrue();
+		assertThat(onDisconnected.get()).isFalse();
+		assertThat(timeout.get()).isEqualTo(expectedTimeout);
+	}
+
+	@Test
 	void testSniSupport() throws Exception {
-		SelfSignedCertificate defaultCert = new SelfSignedCertificate("default");
-		SelfSignedCertificate testCert = new SelfSignedCertificate("test.com");
+		X509Bundle defaultCert = new CertificateBuilder().subject("CN=default").setIsCertificateAuthority(true).buildSelfSigned();
+		X509Bundle testCert = new CertificateBuilder().subject("CN=test.com").setIsCertificateAuthority(true).buildSelfSigned();
 
 		AtomicReference<String> hostname = new AtomicReference<>();
 
-		Http3SslContextSpec defaultSslContextBuilder = Http3SslContextSpec.forServer(defaultCert.key(), null, defaultCert.cert());
-		Http3SslContextSpec testSslContextBuilder = Http3SslContextSpec.forServer(testCert.key(), null, testCert.cert());
+		Http3SslContextSpec defaultSslContextBuilder = Http3SslContextSpec.forServer(defaultCert.toTempPrivateKeyPem(), null, defaultCert.toTempCertChainPem());
+		Http3SslContextSpec testSslContextBuilder = Http3SslContextSpec.forServer(testCert.toTempPrivateKeyPem(), null, testCert.toTempCertChainPem());
 
 		disposableServer =
 				createServer().port(8080)
@@ -863,7 +934,61 @@ class Http3Tests {
 	}
 
 	@Test
-	void testTrailerHeadersFullResponse() throws Exception {
+	void testTrailerHeadersFullResponseSend() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .send())
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendFluxContentAlwaysEmpty() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .status(HttpResponseStatus.NO_CONTENT)
+				               .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response")))
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendFluxContentLengthZero() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .header(HttpHeaderNames.CONTENT_LENGTH, "0")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response")))
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendHeaders() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .sendHeaders())
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendMono() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) ->
@@ -872,7 +997,34 @@ class Http3Tests {
 				               .sendString(Mono.just("testTrailerHeadersFullResponse")))
 				        .bindNow();
 
-		doTestTrailerHeaders(createClient(disposableServer.port()), "empty", "testTrailerHeadersFullResponse");
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "testTrailerHeadersFullResponse");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendMonoEmpty() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> {
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"));
+				            return Mono.empty();
+				        })
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendObject() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .sendObject(Unpooled.wrappedBuffer("testTrailerHeadersFullResponse".getBytes(Charset.defaultCharset()))))
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "testTrailerHeadersFullResponse");
 	}
 
 	@Test
@@ -889,10 +1041,24 @@ class Http3Tests {
 		doTestTrailerHeaders(createClient(disposableServer.port()), "empty", "testTrailerHeadersNotSpecifiedUpfront");
 	}
 
+	@Test
+	void testTrailerHeadersPseudoHeaderNotAllowed() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, ":protocol")
+				               .trailerHeaders(h -> h.set(":protocol", "test"))
+				               .sendString(Flux.just("testTrailerHeaders", "PseudoHeaderNotAllowed")))
+				        .bindNow();
+
+		// Trailers MUST NOT include pseudo-header fields
+		doTestTrailerHeaders(createClient(disposableServer.port()), "empty", "testTrailerHeadersPseudoHeaderNotAllowed");
+	}
+
 	private static void doTestTrailerHeaders(HttpClient client, String expectedHeaderValue, String expectedResponse) {
 		client.get()
 		      .uri("/")
-		      .responseSingle((res, bytes) -> bytes.asString().zipWith(res.trailerHeaders()))
+		      .responseSingle((res, bytes) -> bytes.asString().defaultIfEmpty("empty").zipWith(res.trailerHeaders()))
 		      .as(StepVerifier::create)
 		      .expectNextMatches(t -> expectedResponse.equals(t.getT1()) &&
 		              expectedHeaderValue.equals(t.getT2().get("foo", "empty")))
@@ -950,6 +1116,117 @@ class Http3Tests {
 			provider.disposeLater()
 			        .block(Duration.ofSeconds(5));
 		}
+	}
+
+	@Test
+	void clientDropsEmptyFileChunked() throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		clientDropsFile((req, out) -> out.sendFileChunked(path, 0, 0));
+	}
+
+	@Test
+	void clientDropsEmptyFileDefault() throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		clientDropsFile((req, out) -> out.sendFile(path));
+	}
+
+	@Test
+	void clientDropsFileChunked() throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		clientDropsFile((req, out) -> out.sendFileChunked(path, 0, 0));
+	}
+
+	@Test
+	void clientDropsFileDefault() throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		clientDropsFile((req, out) -> out.sendFile(path));
+	}
+
+	private void clientDropsFile(BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> sender) throws Exception {
+		disposableServer =
+				createServer()
+				        .route(r -> r.post("/", (req, res) ->
+				            res.sendString(req.receive()
+				                              .aggregate()
+				                              .asString()
+				                              .defaultIfEmpty("empty"))))
+				        .bindNow();
+
+		createClient(disposableServer.port())
+		        .headers(h -> h.set(HttpHeaderNames.CONTENT_LENGTH, "0"))
+		        .post()
+		        .uri("/")
+		        .send(sender)
+		        .responseSingle((res, buf) -> buf.asString())
+		        .as(StepVerifier::create)
+		        .expectNext("empty")
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(5));
+	}
+
+	@Test
+	void serverDropsEmptyFileChunked() throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		serverDropsFile((req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFileChunked(path, 0, 0));
+	}
+
+	@Test
+	void serverDropsEmptyFileDefault() throws Exception {
+		Path path = Files.createTempFile("empty", ".txt");
+		path.toFile().deleteOnExit();
+
+		serverDropsFile((req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFile(path));
+	}
+
+	@Test
+	void serverDropsFileChunked() throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		serverDropsFile((req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFileChunked(path, 0, 0));
+	}
+
+	@Test
+	void serverDropsFileDefault() throws Exception {
+		Path path = Paths.get(getClass().getResource("/largeFile.txt").toURI());
+
+		serverDropsFile((req, res) -> res.header(HttpHeaderNames.CONTENT_LENGTH, "0").sendFile(path));
+	}
+
+	private void serverDropsFile(BiFunction<? super HttpServerRequest, ? super HttpServerResponse, ? extends Publisher<Void>> sender) throws Exception {
+		disposableServer =
+				createServer()
+				        .route(r -> r.get("/", sender))
+				        .bindNow();
+
+		createClient(disposableServer.port())
+		        .get()
+		        .uri("/")
+		        .responseSingle((res, buf) -> buf.asString().defaultIfEmpty("empty"))
+		        .as(StepVerifier::create)
+		        .expectNext("empty")
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(5));
+	}
+
+	@Test
+	void httpClientSmokeTest() {
+		createClient(443)
+		        .host("projectreactor.io")
+		        .get()
+		        .uri("/")
+		        .responseSingle((res, bytes) -> Mono.just(res.responseHeaders().get("x-http3-stream-id", "null")))
+		        .as(StepVerifier::create)
+		        .expectNextMatches(s -> !"null".equals(s))
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(30));
 	}
 
 	static HttpClient createClient(int port) {

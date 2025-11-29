@@ -20,12 +20,12 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.logging.LoggingHandler;
-import io.netty.incubator.codec.http3.Http3;
-import io.netty.incubator.codec.http3.Http3ClientConnectionHandler;
-import io.netty.incubator.codec.quic.QuicChannel;
-import io.netty.incubator.codec.quic.QuicChannelBootstrap;
-import io.netty.incubator.codec.quic.QuicStreamChannel;
-import io.netty.incubator.codec.quic.QuicStreamChannelBootstrap;
+import io.netty.handler.codec.http3.Http3;
+import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
+import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.handler.codec.quic.QuicChannelBootstrap;
+import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.quic.QuicStreamChannelBootstrap;
 import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
@@ -167,13 +167,13 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 
 	@Override
 	protected void registerDefaultMetrics(String id, SocketAddress remoteAddress, InstrumentedPool.PoolMetrics metrics) {
-		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+		MicrometerHttp2ConnectionProviderMeterRegistrar
 				.registerMetrics(name(), id, remoteAddress, metrics);
 	}
 
 	@Override
 	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
-		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+		MicrometerHttp2ConnectionProviderMeterRegistrar
 				.deRegisterMetrics(name(), id, remoteAddress);
 	}
 
@@ -222,7 +222,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 			owner(connection.channel()).onStateChange(connection, newState);
 		}
 
-		ConnectionObserver owner(Channel channel) {
+		static ConnectionObserver owner(Channel channel) {
 			ConnectionObserver obs;
 
 			for (;;) {

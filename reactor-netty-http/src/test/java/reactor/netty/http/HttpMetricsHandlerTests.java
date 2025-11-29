@@ -30,6 +30,8 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.unix.DomainSocketAddress;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2StreamChannel;
@@ -169,13 +171,14 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	 * <ul>
 	 *  <li> /1 is used by testExistingEndpoint test</li>
 	 *  <li> /2 is used by testExistingEndpoint, and testUriTagValueFunctionNotSharedForClient tests</li>
-	 *  <li> /3 does not exists but is used by testNonExistingEndpoint, checkExpectationsNonExisting tests</li>
+	 *  <li> /3 does not exist but is used by testNonExistingEndpoint, checkExpectationsNonExisting tests</li>
 	 *  <li> /4 is used by testServerConnectionsMicrometer test</li>
 	 *  <li> /5 is used by testServerConnectionsRecorder test</li>
 	 *  <li> /6 is used by testServerConnectionsMicrometerConnectionClose test</li>
 	 *  <li> /7 is used by testServerConnectionsRecorderConnectionClose test</li>
 	 *  <li> /8 is used by testServerConnectionsWebsocketMicrometer test</li>
 	 *  <li> /9 is used by testServerConnectionsWebsocketRecorder test</li>
+	 *  <li> /10 is used by testIssue3883 for testing 100-Continue</li>
 	 * </ul>
 	 */
 	@BeforeEach
@@ -210,6 +213,10 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 				                     out.sendString(Mono.just("Hello World!").doOnNext(b -> checkServerConnectionsMicrometer(req)))))
 				             .get("/9", (req, res) -> res.sendWebsocket((in, out) ->
 				                     out.sendString(Mono.just("Hello World!").doOnNext(b -> checkServerConnectionsRecorder(req)))))
+				             .post("/10", (req, res) -> req.receive()
+				                                           .aggregate()
+				                                           .asString()
+				                                           .flatMap(s -> res.header("Connection", "close").sendString(Mono.just(s)).then()))
 				);
 
 		provider = ConnectionProvider.create("HttpMetricsHandlerTests", 1);
@@ -228,6 +235,10 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 					.block(Duration.ofSeconds(30));
 		}
 
+		Metrics.removeRegistry(registry);
+		registry.clear();
+		registry.close();
+
 		// In case the ServerCloseHandler is registered on the server, make sure client socket is closed on the server side
 		assertThat(ServerCloseHandler.INSTANCE.awaitClientClosedOnServer()).as("awaitClientClosedOnServer timeout").isTrue();
 
@@ -240,10 +251,6 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 			group.close()
 			     .get(5, TimeUnit.SECONDS);
 		}
-
-		Metrics.removeRegistry(registry);
-		registry.clear();
-		registry.close();
 	}
 
 	@ParameterizedTest
@@ -1057,8 +1064,8 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 
 	@ParameterizedTest
 	@MethodSource("httpCompatibleProtocols")
-	void testIssue3060ConnectTimeoutException(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols,
-			@Nullable ProtocolSslContextSpec serverCtx, @Nullable ProtocolSslContextSpec clientCtx) throws Exception {
+	void testIssue3060ConnectTimeoutException(@SuppressWarnings("unused") HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols,
+			@SuppressWarnings("unused") @Nullable ProtocolSslContextSpec serverCtx, @Nullable ProtocolSslContextSpec clientCtx) throws Exception {
 		CountDownLatch latch = new CountDownLatch(1);
 		customizeClientOptions(httpClient, clientCtx, clientProtocols)
 		        .remoteAddress(() -> new InetSocketAddress("1.1.1.1", 11111))
@@ -1074,6 +1081,58 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 
 		String[] summaryTags = new String[]{REMOTE_ADDRESS, "1.1.1.1:11111", PROXY_ADDRESS, NA, STATUS, ERROR};
 		assertTimer(registry, CLIENT_CONNECT_TIME, summaryTags).hasCountEqualTo(1);
+	}
+
+	@ParameterizedTest
+	@MethodSource("httpCompatibleProtocols")
+	void testIssue3883(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols,
+			@Nullable ProtocolSslContextSpec serverCtx, @Nullable ProtocolSslContextSpec clientCtx) throws Exception {
+		CountDownLatch responseSent = new CountDownLatch(1); // response fully sent by the server
+		AtomicReference<CountDownLatch> responseSentRef = new AtomicReference<>(responseSent);
+		ResponseSentHandler responseSentHandler = ResponseSentHandler.INSTANCE;
+		disposableServer = customizeServerOptions(httpServer, serverCtx, serverProtocols)
+				.doOnConnection(cnx -> responseSentHandler.register(responseSentRef, cnx.channel().pipeline()))
+				.bindNow();
+
+		AtomicReference<SocketAddress> serverAddress = new AtomicReference<>();
+		CountDownLatch clientCompleted = new CountDownLatch(1); // client received full response
+		AtomicReference<CountDownLatch> clientCompletedRef = new AtomicReference<>(clientCompleted);
+		httpClient = customizeClientOptions(httpClient, clientCtx, clientProtocols)
+				.doAfterRequest((req, conn) -> serverAddress.set(conn.channel().remoteAddress()))
+				.doAfterResponseSuccess((resp, conn) -> clientCompletedRef.get().countDown());
+
+		httpClient.headers(h -> h.add(HttpHeaderNames.EXPECT, HttpHeaderValues.CONTINUE))
+		          .post()
+		          .uri("/10")
+		          .send(body)
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .as(StepVerifier::create)
+		          .expectNext("Hello World!")
+		          .expectComplete()
+		          .verify(Duration.ofSeconds(5));
+
+		assertThat(responseSentRef.get().await(30, TimeUnit.SECONDS)).as("responseSentRef latch await").isTrue();
+		assertThat(clientCompletedRef.get().await(30, TimeUnit.SECONDS)).as("clientCompletedRef latch await").isTrue();
+
+		InetSocketAddress sa = (InetSocketAddress) serverAddress.get();
+
+		int[] numWrites = new int[]{14, 25};
+		int[] bytesWrite = new int[]{160, 243};
+		if ((serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11)) {
+			numWrites = new int[]{14, 28};
+			bytesWrite = new int[]{151, 310};
+		}
+		else if (clientProtocols.length == 2 &&
+				Arrays.equals(clientProtocols, new HttpProtocol[]{HttpProtocol.H2C, HttpProtocol.HTTP11})) {
+			numWrites = new int[]{17, 28};
+			bytesWrite = new int[]{315, 435};
+		}
+
+		checkExpectationsExisting("/10", sa.getHostString() + ":" + sa.getPort(), 1, serverCtx != null,
+				numWrites[0], bytesWrite[0]);
 	}
 
 	static Stream<Arguments> combinationsIssue2956() {
@@ -1176,7 +1235,8 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	}
 
 	private void checkServerConnectionsMicrometer(HttpServerRequest request) {
-		String address = formatSocketAddress(request.connectionHostAddress());
+		SocketAddress connectionHostAddress = request.connectionHostAddress();
+		String address = connectionHostAddress != null ? formatSocketAddress(connectionHostAddress) : null;
 		boolean isHttp2 = request.requestHeaders().contains(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text());
 		assertGauge(registry, SERVER_CONNECTIONS_TOTAL, URI, HTTP, LOCAL_ADDRESS, address).hasValueEqualTo(1);
 		if (isHttp2) {
@@ -1187,9 +1247,10 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 		}
 	}
 
-	private void checkServerConnectionsRecorder(HttpServerRequest request) {
+	private static void checkServerConnectionsRecorder(HttpServerRequest request) {
 		try {
-			String address = formatSocketAddress(request.hostAddress());
+			InetSocketAddress hostAddress = request.hostAddress();
+			String address = hostAddress != null ? formatSocketAddress(hostAddress) : null;
 			boolean isHttp2 = request.requestHeaders().contains(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text());
 			assertThat(ServerRecorder.INSTANCE.onServerConnectionsAmount.get()).isEqualTo(1);
 			assertThat(ServerRecorder.INSTANCE.onServerConnectionsLocalAddr.get()).isEqualTo(address);
@@ -1266,7 +1327,7 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	}
 
 	private void checkExpectationsNonExisting(String serverAddress, int connIndex, int index, boolean checkTls,
-			int numWrites, @SuppressWarnings("unused")int numReads, double expectedSentAmount,
+			int numWrites, @SuppressWarnings("unused") int numReads, double expectedSentAmount,
 			@SuppressWarnings("unused") double expectedReceivedAmount) {
 		String uri = "/3";
 		String[] timerTags1 = new String[] {URI, uri, METHOD, "GET", STATUS, "404"};
@@ -1372,12 +1433,12 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	}
 
 	@SuppressWarnings("deprecation")
-	HttpServer customizeServerOptions(HttpServer httpServer, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
+	static HttpServer customizeServerOptions(HttpServer httpServer, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
 		return ctx == null ? httpServer.protocol(protocols) : httpServer.protocol(protocols).secure(spec -> spec.sslContext(ctx));
 	}
 
 	@SuppressWarnings("deprecation")
-	HttpClient customizeClientOptions(HttpClient httpClient, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
+	static HttpClient customizeClientOptions(HttpClient httpClient, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
 		return ctx == null ? httpClient.protocol(protocols) : httpClient.protocol(protocols).secure(spec -> spec.sslContext(ctx));
 	}
 
